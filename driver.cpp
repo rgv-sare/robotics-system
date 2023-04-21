@@ -2,6 +2,8 @@
 
 #include "Arduino.h"
 
+// moike skaterboy
+
 #define ENCA 2 // YELLOW
 #define ENCB 3 // WHITE
 #define PWM 5
