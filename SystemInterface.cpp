@@ -37,7 +37,7 @@ HRSPacket::HRSPacket() :
 }
 
 HRSPacket::HRSPacket(uint16_t command) :
-  m_capacity(HRS_SMALL_PACKET_SIZE),
+  m_capacity(HRS_PACKET_SIZE),
   m_command(command),
   m_dataNumBytes(0),
   m_writeable(true),
@@ -262,20 +262,6 @@ bool HRSPacket::isWriteable() const
   return m_writeable;
 }
 
-// ----------- HRSLargePacket ------------ //
-
-HRSLargePacket::HRSLargePacket() :
-  HRSLargePacket(0)
-{
-
-}
-
-HRSLargePacket::HRSLargePacket(uint16_t command) :
-  HRSPacket(command)
-{
-  m_capacity = HRS_MAX_PACKET_SIZE;
-}
-
 // ----------- hrssi ------------ //
 
 hrssi::Variable::Variable(Type type, const char* name, void* ptr) :
@@ -287,16 +273,9 @@ hrssi::Variable::Variable(Type type, const char* name, void* ptr) :
 }
 
 // Small packet pool
-static HRSPacket i_smallPackets[HRS_NUM_SMALL_PACKETS];
-static uint8_t i_sRecvPacketIndex = 1;
-static uint8_t i_sPacketIndex = 0;
-
-// Large packet pool
-static HRSLargePacket i_largePackets[HRS_NUM_LARGE_PACKETS];
-static uint8_t i_lRecvPacketIndex = 1;
-static uint8_t i_lPacketIndex = 0;
-
-static bool i_recvPacketIsLarge = false;
+static HRSPacket i_packetPool[HRS_NUM_PACKETS];
+static uint8_t i_recvPacketIndex = 1;
+static uint8_t i_packetIndex = 0;
 
 // Variable array
 static hrssi::Variable* i_variables = nullptr;
@@ -313,7 +292,7 @@ void hrssi::poll()
   static uint8_t byteAsHex[2];
   static uint8_t byteAsHexIndex = 0;
 
-  HRSPacket& packet = hrssi::getReceivePacket(i_recvPacketIsLarge);
+  HRSPacket& packet = hrssi::getReceivePacket();
 
   while(Serial.available())
   {
@@ -326,22 +305,13 @@ void hrssi::poll()
       if(byte == r_noop)
       {
         packet.end();
-        Serial.print("End packet");
-        Serial.print(packet.m_command);
-        Serial.print(" ");
-        Serial.println(i_lRecvPacketIndex);
         processCommand(packet);
         continue;
       }
 
-      // Reserve a large packet if the command is the 'ret' or 'echo' command
-      i_recvPacketIsLarge = byte == r_ret || byte == r_echo;
-      packet = hrssi::getReceivePacket(i_recvPacketIsLarge);
+      // Start of packet
+      packet = hrssi::getReceivePacket();
       packet.setCommand(byte);
-      Serial.print("Start packet");
-      Serial.print(packet.m_command);
-      Serial.print(" ");
-      Serial.println(i_lRecvPacketIndex);
     }
     // Data byte
     else if(127 < packet.m_command)
@@ -370,6 +340,9 @@ void hrssi::send(HRSPacket& command)
   }
 
   Serial.write((uint8_t) s_noop); // End of packet
+
+  // Packet is no longer occupied
+  command.m_occupied = false;
 }
 
 void hrssi::processCommand(HRSPacket& command)
@@ -400,73 +373,56 @@ void hrssi::processCommand(HRSPacket& command)
       com_getvars(command);
       break;
   }
+
+  // Packet is no longer occupied
+  command.m_occupied = false;
 }
 
-HRSPacket& hrssi::getNextAvailablePacket(bool large)
+HRSPacket& hrssi::getNextAvailablePacket()
 {
-  if(large)
+  bool foundAvailable = false;
+  while(!foundAvailable)
   {
-    i_lPacketIndex++;
-    if(i_lRecvPacketIndex == i_lPacketIndex) i_lPacketIndex++;
+    i_packetIndex++;
+    i_packetIndex %= HRS_NUM_PACKETS;
 
-    if(i_lPacketIndex >= HRS_NUM_LARGE_PACKETS)
-      i_lPacketIndex = 0;
-
-    i_largePackets[i_lPacketIndex] = HRSLargePacket();
-
-    return i_largePackets[i_lPacketIndex];
+    if(!i_packetPool[i_packetIndex].m_occupied)
+    {
+      i_packetPool[i_packetIndex] = HRSPacket();
+      i_packetPool[i_packetIndex].m_occupied = true;
+      foundAvailable = true;
+    }
   }
-  else
-  {
-    i_sPacketIndex++;
-    if(i_sRecvPacketIndex == i_sPacketIndex) i_sPacketIndex++;
 
-    if(i_sPacketIndex >= HRS_NUM_SMALL_PACKETS)
-      i_sPacketIndex = 0;
+  i_packetPool[i_packetIndex] = HRSPacket();
 
-    i_smallPackets[i_sPacketIndex] = HRSPacket();
-
-    return i_smallPackets[i_sPacketIndex];
-  }
+  return i_packetPool[i_packetIndex];
 }
 
-HRSPacket& hrssi::getReceivePacket(bool large)
+HRSPacket& hrssi::getReceivePacket()
 {
-  if(large)
+  if(!i_packetPool[i_recvPacketIndex].m_occupied)
   {
-    if(!i_largePackets[i_lRecvPacketIndex].m_writeable)
+    bool foundAvailable = false;
+    while(!foundAvailable)
     {
-      i_lRecvPacketIndex++;
-      if(i_lRecvPacketIndex == i_lPacketIndex) i_lRecvPacketIndex++;
+      i_recvPacketIndex++;
+      i_recvPacketIndex %= HRS_NUM_PACKETS;
 
-      if(i_lRecvPacketIndex >= HRS_NUM_LARGE_PACKETS)
-        i_lRecvPacketIndex = 0;
-
-        i_largePackets[i_lRecvPacketIndex] = HRSLargePacket();
+      if(!i_packetPool[i_recvPacketIndex].m_occupied)
+        foundAvailable = true;
     }
 
-    return i_largePackets[i_lRecvPacketIndex];
+    i_packetPool[i_recvPacketIndex] = HRSPacket();
+    i_packetPool[i_recvPacketIndex].m_occupied = true;
   }
-  else
-  {
-    if(!i_smallPackets[i_sRecvPacketIndex].m_writeable)
-    {
-      i_sRecvPacketIndex++;
-      if(i_sRecvPacketIndex == i_sPacketIndex) i_sRecvPacketIndex++;
 
-      if(i_sRecvPacketIndex >= HRS_NUM_SMALL_PACKETS)
-        i_sRecvPacketIndex = 0;
-
-      i_smallPackets[i_sRecvPacketIndex] = HRSPacket();
-    }
-
-    return i_smallPackets[i_sRecvPacketIndex];
-  }
+  return i_packetPool[i_recvPacketIndex];
 }
 
 void HRS_COMR hrssi::com_echo(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(true);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   response.setCommand(s_logstr);
 
@@ -485,7 +441,7 @@ void HRS_COMR hrssi::com_ret(HRSPacket& command)
 
 void HRS_COMR hrssi::com_getbyte(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(false);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   uint8_t retID = command.getByte();
   uint16_t index = command.getShort();
@@ -504,7 +460,7 @@ void HRS_COMR hrssi::com_getbyte(HRSPacket& command)
 
 void HRS_COMR hrssi::com_getword(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(false);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   uint8_t retID = command.getByte();
   uint16_t index = command.getShort();
@@ -523,7 +479,7 @@ void HRS_COMR hrssi::com_getword(HRSPacket& command)
 
 void HRS_COMR hrssi::com_getdword(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(false);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   uint8_t retID = command.getByte();
   uint16_t index = command.getShort();
@@ -542,7 +498,7 @@ void HRS_COMR hrssi::com_getdword(HRSPacket& command)
 
 void HRS_COMR hrssi::com_getstring(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(true);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   uint8_t retID = command.getByte();
   uint16_t index = command.getShort();
@@ -568,7 +524,7 @@ void HRS_COMR hrssi::com_getstring(HRSPacket& command)
 
 void HRS_COMR hrssi::com_getvars(HRSPacket& command)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(true);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   response.setCommand(s_ret);
   response.putByte(command.getByte());
@@ -591,7 +547,7 @@ void HRS_COMR hrssi::com_getvars(HRSPacket& command)
 
 void HRS_COMS hrssi::com_logstr(const char* str)
 {
-  HRSPacket& response = hrssi::getNextAvailablePacket(true);
+  HRSPacket& response = hrssi::getNextAvailablePacket();
 
   response.setCommand(s_logstr);
 

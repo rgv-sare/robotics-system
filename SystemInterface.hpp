@@ -1,12 +1,17 @@
 #ifndef HRS_SYSTEM_INTERFACE_HPP
 #define HRS_SYSTEM_INTERFACE_HPP
 
-#define HRS_SMALL_PACKET_SIZE 64
-#define HRS_MAX_PACKET_SIZE 256
+// If compiling for the Arduino Uno, packet size is 128 bytes
+#ifdef ARDUINO_AVR_UNO
+#define HRS_PACKET_SIZE 128
+// If compiling for the Arduino Mega, packet size is 256 bytes
+#elif defined(ARDUINO_AVR_MEGA2560)
+#define HRS_PACKET_SIZE 256
+#else
+#define HRS_PACKET_SIZE 1024
+#endif
 
-#define HRS_NUM_SMALL_PACKETS 4
-#define HRS_NUM_LARGE_PACKETS 2
-
+#define HRS_NUM_PACKETS 4
 
 // List of commands from the Control Panel
 #define r_noop 128
@@ -67,18 +72,9 @@ private:
   bool m_occupied;
 
   uint16_t m_dataNumBytes;
-  uint8_t m_data[HRS_SMALL_PACKET_SIZE];
+  uint8_t m_data[HRS_PACKET_SIZE];
 
   friend class hrssi;
-};
-
-class HRSLargePacket : public HRSPacket
-{
-public:
-  HRSLargePacket();
-  HRSLargePacket(uint16_t command);
-private:
-  uint8_t m_extraData[HRS_MAX_PACKET_SIZE - HRS_SMALL_PACKET_SIZE];
 };
 
 #define HRS_COMS // Marker for commands from the Control Panel
@@ -119,8 +115,8 @@ private:
   static void send(HRSPacket& packet);
   static void processCommand(HRSPacket& packet);
 
-  static HRSPacket& getNextAvailablePacket(bool large);
-  static HRSPacket& getReceivePacket(bool large);
+  static HRSPacket& getNextAvailablePacket();
+  static HRSPacket& getReceivePacket();
 
   // Commands from the Control Panel
   static HRS_COMR void com_echo(HRSPacket& packet);
@@ -133,7 +129,6 @@ private:
 
   // Commands to the Control Panel
   static HRS_COMS void com_logstr(const char* str);
-  static HRS_COMS void com_ret(size_t numBytes, const uint8_t* data);
 };
 
 #endif // HRS_SYSTEM_INTERFACE_HPP
